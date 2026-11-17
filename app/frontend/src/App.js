@@ -1,0 +1,63 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import './App.css';
+
+function App() {
+  const [todos, setTodos] = useState([]);
+  const [task, setTask] = useState("");
+
+  const fetchTodos = async () => {
+    const response = await axios.get('/todos');
+    setTodos(response.data);
+  };
+
+  const addTodo = async () => {
+    if (task.trim()) {
+      const response = await axios.post('/todos', { text: task });
+      setTodos([...todos, response.data]);
+      setTask("");
+    }
+  };
+
+  const toggleComplete = async (id) => {
+    const response = await axios.patch(`/todos/${id}`);
+    const updatedTodos = todos.map(todo =>
+      todo._id === id ? response.data : todo
+    );
+    setTodos(updatedTodos);
+  };
+
+  const deleteTodo = async (id) => {
+    await axios.delete(`/todos/${id}`);
+    setTodos(todos.filter(todo => todo._id !== id));
+  };
+
+  useEffect(() => {
+    fetchTodos();
+  }, []);
+
+  return (
+    <div className="App">
+      <h1>Lista de Tarefas</h1>
+      <div>
+        <input
+          type="text"
+          value={task}
+          onChange={(e) => setTask(e.target.value)}
+          placeholder="Adicione uma tarefa"
+        />
+        <button onClick={addTodo}>Adicionar</button>
+      </div>
+      <ul>
+        {todos.map((todo) => (
+          <li key={todo._id} style={{ textDecoration: todo.completed ? "line-through" : "none" }}>
+            <span onClick={() => toggleComplete(todo._id)}>{todo.text}</span>
+            <button onClick={() => deleteTodo(todo._id)}>Excluir</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+export default App;
