@@ -57,6 +57,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 2. Restaurar Terraform State anterior (se existir)
+        if: always()
         uses: actions/cache@v4
         with:
           path: |
