@@ -1,0 +1,60 @@
+---
+- name: Preparar todas as VMs (SO, pacotes extras e Docker)
+  hosts: all
+  become: yes
+  roles:
+    - os_updates
+    - docker
+
+- name: Configurar e subir o MongoDB na VM exclusiva de Banco
+  hosts: db
+  become: yes
+  tasks:
+    - name: Criar diretório de build do MongoDB
+      file:
+        path: /opt/todo-db
+        state: directory
+        mode: '0755'
+
+    - name: Copiar arquivos de inicialização do banco
+      copy:
+        src: "{{ playbook_dir }}/../app/banco-de-dados/"
+        dest: /opt/todo-db/
+
+    - name: Construir imagem customizada do MongoDB
+      community.docker.docker_image:
+        name: todo-mongo
+        tag: "{{ docker_tag | default('v1.0') }}"
+        build:
+          path: /opt/todo-db
+        source: build
+        force_source: yes
+
+    - name: Criar volume persistente para os dados do MongoDB
+      community.docker.docker_volume:
+        name: mongo_todo_data
+        state: present
+
+    - name: Iniciar contêiner do MongoDB com persistência e restart automático
+      community.docker.docker_container:
+        name: mongo-todo
+        image: "todo-mongo:{{ docker_tag | default('v1.0') }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "27017:27017"
+        env:
+          MONGO_INITDB_ROOT_USERNAME: "{{ db_user }}"
+          MONGO_INITDB_ROOT_PASSWORD: "{{ db_password }}"
+          MONGO_INITDB_DATABASE: "todo-app"
+        volumes:
+          - mongo_todo_data:/data/db
+
+- name: Configurar e subir o ToDo App com HTTPS na VM de Aplicação
+  hosts: app
+  become: yes
+  vars:
+    db_private_ip: "{{ hostvars[groups['db'][0]]['private_ip'] }}"
+    app_domain: "{{ ansible_host }}.sslip.io"
+  roles:
+    - containers

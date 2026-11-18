@@ -1,0 +1,119 @@
+---
+- name: Criar diretório da aplicação na VM
+  file:
+    path: /opt/todo-app
+    state: directory
+    mode: '0755'
+
+- name: Copiar código da aplicação (Frontend e Backend)
+  copy:
+    src: "{{ playbook_dir }}/../app/"
+    dest: /opt/todo-app/
+
+- name: Criar rede interna Docker para comunicação Nginx <-> API
+  community.docker.docker_network:
+    name: todo-net
+    state: present
+
+- name: Construir imagem do Backend (API Node.js)
+  community.docker.docker_image:
+    name: todo-backend
+    tag: "{{ docker_tag | default('v1.0') }}"
+    build:
+      path: /opt/todo-app/backend
+    source: build
+    force_source: yes
+
+- name: Construir imagem do Frontend (React + Nginx)
+  community.docker.docker_image:
+    name: todo-frontend
+    tag: "{{ docker_tag | default('v1.0') }}"
+    build:
+      path: /opt/todo-app/frontend
+    source: build
+    force_source: yes
+
+- name: Executar contêiner do Backend conectado ao MongoDB privado
+  community.docker.docker_container:
+    name: backend
+    image: "todo-backend:{{ docker_tag | default('v1.0') }}"
+    state: started
+    recreate: "{{ force_recreate | default(false) | bool }}"
+    restart_policy: always
+    networks:
+      - name: todo-net
+    env:
+      PORT: "5000"
+      MONGO_URI: "mongodb://{{ db_user }}:{{ db_password }}@{{ db_private_ip }}:27017/todo-app?authSource=admin"
+      CORS_ORIGIN: "https://{{ app_domain }}"
+
+- name: Executar contêiner do Frontend na porta interna 8080
+  community.docker.docker_container:
+    name: frontend
+    image: "todo-frontend:{{ docker_tag | default('v1.0') }}"
+    state: started
+    recreate: "{{ force_recreate | default(false) | bool }}"
+    restart_policy: always
+    networks:
+      - name: todo-net
+    ports:
+      - "127.0.0.1:8080:80"
+
+- name: Instalar Nginx e Certbot no host para terminação HTTPS (Let's Encrypt)
+  apt:
+    name:
+      - nginx
+      - certbot
+      - python3-certbot-nginx
+    state: present
+
+- name: Configurar Nginx como Proxy Reverso para o Frontend/API
+  copy:
+    dest: /etc/nginx/sites-available/todo-app
+    content: |
+      server {
+          listen 80;
+          server_name {{ app_domain }};
+
+          location / {
+              proxy_pass http://127.0.0.1:8080;
+              proxy_http_version 1.1;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+          }
+      }
+
+- name: Ativar site no Nginx e remover default
+  file:
+    src: /etc/nginx/sites-available/todo-app
+    dest: /etc/nginx/sites-enabled/todo-app
+    state: link
+
+- name: Remover configuração padrão do Nginx
+  file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
+- name: Recarregar Nginx
+  service:
+    name: nginx
+    state: reloaded
+
+- name: Gerar certificado HTTPS gratuito via Let's Encrypt
+  command: >
+    certbot --nginx -d {{ app_domain }}
+    --non-interactive --agree-tos --register-unsafely-without-email --redirect
+  args:
+    creates: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
+
+- name: Validar saúde da aplicação via HTTPS (Healthcheck)
+  uri:
+    url: "https://{{ app_domain }}/health"
+    method: GET
+    status_code: 200
+  register: health_result
+  retries: 5
+  delay: 5
+  until: health_result.status == 200

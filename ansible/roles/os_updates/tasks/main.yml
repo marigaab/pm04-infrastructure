@@ -1,0 +1,25 @@
+---
+- name: Atualizar cache do apt
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Aplicar atualizações do sistema operacional (quando update_os = true)
+  apt:
+    upgrade: dist
+    autoremove: yes
+  when: update_os | default(false) | bool
+
+- name: Instalar pacotes adicionais solicitados na pipeline
+  apt:
+    name: "{{ extra_packages.split(',') | map('trim') | list }}"
+    state: present
+  when: extra_packages is defined and extra_packages | length > 0
+
+- name: Liberar tráfego no firewall interno do Ubuntu (iptables OCI)
+  shell: |
+    iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+    iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+    iptables -I INPUT 6 -m state --state NEW -p tcp --dport 27017 -j ACCEPT
+    netfilter-persistent save || true
+  changed_when: false

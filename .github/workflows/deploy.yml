@@ -1,0 +1,148 @@
+name: PM-04 Infrastructure & ToDo App Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Ação da pipeline (apply = criar/atualizar | destroy = encerrar tudo)'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+      environment:
+        description: 'Ambiente de destino (dev / homolog / prod)'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - dev
+          - homolog
+          - prod
+      instance_name:
+        description: 'Prefixo do nome das máquinas virtuais'
+        required: true
+        default: 'vm-pm04'
+      instance_type:
+        description: 'Shape da VM na Oracle Cloud'
+        required: true
+        default: 'VM.Standard.E2.1.Micro'
+        type: choice
+        options:
+          - VM.Standard.E2.1.Micro
+          - VM.Standard.A1.Flex
+      docker_tag:
+        description: 'Versão/Tag da imagem Docker da aplicação'
+        required: true
+        default: 'v1.0'
+      update_os:
+        description: 'Aplicar atualizações do Sistema Operacional (true/false)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      extra_packages:
+        description: 'Pacotes adicionais separados por vírgula'
+        required: true
+        default: 'curl, git, unzip'
+
+jobs:
+  provision_and_configure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: 2. Restaurar Terraform State anterior (se existir)
+        uses: actions/cache@v4
+        with:
+          path: |
+            terraform/terraform.tfstate
+            terraform/terraform.tfstate.backup
+          key: tfstate-${{ github.event.inputs.environment || 'prod' }}-${{ github.run_id }}
+          restore-keys: |
+            tfstate-${{ github.event.inputs.environment || 'prod' }}-
+
+      - name: 3. Configurar credenciais OCI e chave SSH
+        run: |
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > /tmp/oci_api_key.pem
+          chmod 600 /tmp/oci_api_key.pem
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: 4. Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: 5. Terraform Init & Plan
+        working-directory: terraform
+        env:
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_environment: ${{ github.event.inputs.environment || 'prod' }}
+          TF_VAR_instance_name: ${{ github.event.inputs.instance_name || 'vm-pm04' }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type || 'VM.Standard.E2.1.Micro' }}
+        run: |
+          terraform init
+          terraform plan -out=tfplan
+
+      - name: 6. Terraform Apply (Provisionar VMs e Rede)
+        if: (github.event.inputs.action || 'apply') == 'apply'
+        working-directory: terraform
+        env:
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_environment: ${{ github.event.inputs.environment || 'prod' }}
+          TF_VAR_instance_name: ${{ github.event.inputs.instance_name || 'vm-pm04' }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type || 'VM.Standard.E2.1.Micro' }}
+        run: |
+          terraform apply -auto-approve tfplan
+          terraform output
+
+      - name: 7. Aguardar SSH das VMs ficar disponível
+        if: (github.event.inputs.action || 'apply') == 'apply'
+        run: |
+          echo "Aguardando boot das máquinas virtuais na Oracle Cloud..."
+          sleep 45
+
+      - name: 8. Instalar Ansible e executar Playbook
+        if: (github.event.inputs.action || 'apply') == 'apply'
+        run: |
+          sudo apt-get update && sudo apt-get install -y ansible
+          ansible-galaxy collection install community.docker
+          ansible-playbook -i ansible/inventory/hosts.ini ansible/playbook.yml \
+            --private-key ~/.ssh/id_rsa \
+            -e "docker_tag=${{ github.event.inputs.docker_tag || 'v1.0' }}" \
+            -e "update_os=${{ github.event.inputs.update_os || 'false' }}" \
+            -e "extra_packages='${{ github.event.inputs.extra_packages || 'curl, git, unzip' }}'" \
+            -e "db_user=${{ secrets.DB_USER }}" \
+            -e "db_password=${{ secrets.DB_PASSWORD }}"
+
+      - name: 9. Terraform Destroy (Quando solicitado encerramento)
+        if: github.event.inputs.action == 'destroy'
+        working-directory: terraform
+        env:
+          TF_VAR_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_region: ${{ secrets.OCI_REGION }}
+          TF_VAR_compartment_ocid: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+          TF_VAR_environment: ${{ github.event.inputs.environment || 'prod' }}
+          TF_VAR_instance_name: ${{ github.event.inputs.instance_name || 'vm-pm04' }}
+          TF_VAR_instance_type: ${{ github.event.inputs.instance_type || 'VM.Standard.E2.1.Micro' }}
+        run: |
+          terraform destroy -auto-approve
