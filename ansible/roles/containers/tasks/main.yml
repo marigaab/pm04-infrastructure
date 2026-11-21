@@ -67,7 +67,12 @@
       - python3-certbot-nginx
     state: present
 
-- name: Configurar Nginx como Proxy Reverso para o Frontend/API
+- name: Verificar se o certificado HTTPS já existe
+  stat:
+    path: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
+  register: cert_exists
+
+- name: Configurar Nginx como Proxy Reverso (HTTP inicial antes do certificado)
   copy:
     dest: /etc/nginx/sites-available/todo-app
     content: |
@@ -84,6 +89,7 @@
               proxy_set_header X-Forwarded-Proto $scheme;
           }
       }
+  when: not cert_exists.stat.exists
 
 - name: Ativar site no Nginx e remover default
   file:
@@ -105,8 +111,7 @@
   command: >
     certbot --nginx -d {{ app_domain }}
     --non-interactive --agree-tos --register-unsafely-without-email --redirect
-  args:
-    creates: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
+  when: not cert_exists.stat.exists
 
 - name: Validar saúde da aplicação via HTTPS (Healthcheck)
   uri:
