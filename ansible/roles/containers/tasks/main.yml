@@ -91,6 +91,36 @@
       }
   when: not cert_exists.stat.exists
 
+- name: Configurar Nginx com HTTPS (quando o certificado já existe)
+  copy:
+    dest: /etc/nginx/sites-available/todo-app
+    content: |
+      server {
+          listen 80;
+          server_name {{ app_domain }};
+          return 301 https://$host$request_uri;
+      }
+
+      server {
+          listen 443 ssl;
+          server_name {{ app_domain }};
+
+          ssl_certificate /etc/letsencrypt/live/{{ app_domain }}/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/{{ app_domain }}/privkey.pem;
+          include /etc/letsencrypt/options-ssl-nginx.conf;
+          ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+          location / {
+              proxy_pass http://127.0.0.1:8080;
+              proxy_http_version 1.1;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+          }
+      }
+  when: cert_exists.stat.exists
+
 - name: Ativar site no Nginx e remover default
   file:
     src: /etc/nginx/sites-available/todo-app
@@ -102,16 +132,16 @@
     path: /etc/nginx/sites-enabled/default
     state: absent
 
-- name: Recarregar Nginx
-  service:
-    name: nginx
-    state: reloaded
-
 - name: Gerar certificado HTTPS gratuito via Let's Encrypt
   command: >
     certbot --nginx -d {{ app_domain }}
     --non-interactive --agree-tos --register-unsafely-without-email --redirect
   when: not cert_exists.stat.exists
+
+- name: Recarregar Nginx
+  service:
+    name: nginx
+    state: reloaded
 
 - name: Validar saúde da aplicação via HTTPS (Healthcheck)
   uri:
